@@ -108,9 +108,19 @@ function formatDate(date) {
   return `${date.getDate()}.${date.getMonth() + 1}.${date.getFullYear()}.`;
 }
 
-function autoAssign(shifts, workerNames) {
+function shuffled(items) {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function autoAssign(shifts, workerNames, lockedSchedule = emptySchedule(shifts)) {
   const n = workerNames.length;
   const schedule = {};
+  const workerSet = new Set(workerNames);
   if (n === 0) {
     DAY_DEFS.forEach((d) => {
       schedule[d.key] = {};
@@ -119,30 +129,61 @@ function autoAssign(shifts, workerNames) {
     });
     return schedule;
   }
-  const pointers = shifts.map((_, i) => i);
+  const workCounts = Object.fromEntries(workerNames.map((name) => [name, 0]));
+  const shiftCounts = Object.fromEntries(
+    workerNames.map((name) => [name, Object.fromEntries(shifts.map((s) => [s.id, 0]))])
+  );
+  const shiftTargets = Object.fromEntries(shifts.map((s) => [s.id, Math.ceil((DAY_DEFS.length * s.needed) / n)]));
+  const lastShiftByWorker = Object.fromEntries(workerNames.map((name) => [name, null]));
 
   DAY_DEFS.forEach((day) => {
     const usedToday = new Set();
     schedule[day.key] = {};
-    shifts.forEach((s) => (schedule[day.key][s.id] = []));
+    shifts.forEach((s) => {
+      const lockedNames = (lockedSchedule[day.key]?.[s.id] || []).filter((name) => workerSet.has(name) && !usedToday.has(name));
+      schedule[day.key][s.id] = lockedNames;
+      lockedNames.forEach((name) => {
+        usedToday.add(name);
+        workCounts[name] += 1;
+        shiftCounts[name][s.id] += 1;
+        lastShiftByWorker[name] = s.id;
+      });
+    });
 
-    shifts.forEach((s, sIdx) => {
-      let count = 0;
-      let attempts = 0;
-      while (count < s.needed && attempts < n) {
-        const idx = pointers[sIdx] % n;
-        pointers[sIdx] += 1;
-        attempts += 1;
-        const name = workerNames[idx];
-        if (!usedToday.has(name)) {
-          schedule[day.key][s.id].push(name);
-          usedToday.add(name);
-          count += 1;
-        }
+    const lockedOff = (lockedSchedule[day.key]?.off || []).filter((name) => workerSet.has(name) && !usedToday.has(name));
+    lockedOff.forEach((name) => usedToday.add(name));
+
+    shuffled(shifts).forEach((s) => {
+      let count = schedule[day.key][s.id].length;
+      const rankedCandidates = shuffled(workerNames)
+        .filter((name) => !usedToday.has(name))
+        .sort((a, b) => {
+          const aRepeatsYesterday = lastShiftByWorker[a] === s.id ? 1 : 0;
+          const bRepeatsYesterday = lastShiftByWorker[b] === s.id ? 1 : 0;
+          const aUnderTarget = shiftCounts[a][s.id] < shiftTargets[s.id] ? 0 : 1;
+          const bUnderTarget = shiftCounts[b][s.id] < shiftTargets[s.id] ? 0 : 1;
+          return (
+            aRepeatsYesterday - bRepeatsYesterday ||
+            aUnderTarget - bUnderTarget ||
+            shiftCounts[a][s.id] - shiftCounts[b][s.id] ||
+            workCounts[a] - workCounts[b]
+          );
+        });
+      const nonRepeatingCandidates = rankedCandidates.filter((name) => lastShiftByWorker[name] !== s.id);
+      const candidates = nonRepeatingCandidates.length >= s.needed - count ? nonRepeatingCandidates : rankedCandidates;
+
+      while (count < s.needed && candidates.length > 0) {
+        const name = candidates.shift();
+        schedule[day.key][s.id].push(name);
+        usedToday.add(name);
+        workCounts[name] += 1;
+        shiftCounts[name][s.id] += 1;
+        lastShiftByWorker[name] = s.id;
+        count += 1;
       }
     });
 
-    schedule[day.key].off = workerNames.filter((w) => !usedToday.has(w));
+    schedule[day.key].off = [...lockedOff, ...workerNames.filter((w) => !usedToday.has(w))];
   });
 
   return schedule;
@@ -156,14 +197,14 @@ function Chip({ name, origin, onGrab, onRemove, dimmed }) {
         e.preventDefault();
         onGrab(name, origin, e.clientX, e.clientY);
       }}
-      className="chip inline-flex items-center justify-center gap-1.5 text-sm px-3 py-1.5 rounded-full select-none"
+      className="chip inline-flex items-center justify-center gap-1 text-xs px-2.5 py-1 rounded-full select-none"
       style={{
         background: "#FFFFFF",
         border: "1px solid #D8D2C4",
         touchAction: "none",
         cursor: "grab",
         opacity: dimmed ? 0.35 : 1,
-        minWidth: "104px",
+        minWidth: "88px",
         textAlign: "center",
         whiteSpace: "nowrap",
       }}
@@ -193,6 +234,7 @@ export default function App() {
   const [selectedDays, setSelectedDays] = useState(DAY_DEFS.map((d) => d.key));
   const [weekStart, setWeekStart] = useState("");
   const [scheduleData, setScheduleData] = useState(() => emptySchedule(DEFAULT_SHIFTS));
+  const [lockedSchedule, setLockedSchedule] = useState(() => emptySchedule(DEFAULT_SHIFTS));
 
   // --- Drag state (pointer-events based: works with mouse AND touch) ---
   const [dragInfo, setDragInfo] = useState(null); // { name, origin }
@@ -203,6 +245,7 @@ export default function App() {
 
   useEffect(() => {
     setScheduleData((prev) => reshapeSchedule(prev, shifts));
+    setLockedSchedule((prev) => reshapeSchedule(prev, shifts));
   }, [shifts]);
 
   const activeDays = useMemo(() => DAY_DEFS.filter((d) => selectedDays.includes(d.key)), [selectedDays]);
@@ -252,6 +295,15 @@ export default function App() {
       });
       return next;
     });
+    setLockedSchedule((prev) => {
+      const next = cloneSchedule(prev);
+      Object.keys(next).forEach((day) => {
+        Object.keys(next[day]).forEach((k) => {
+          next[day][k] = next[day][k].filter((n) => n !== name);
+        });
+      });
+      return next;
+    });
   };
 
   const toggleDay = (key) => {
@@ -276,10 +328,27 @@ export default function App() {
       }
       return next;
     });
+    setLockedSchedule((prev) => {
+      const next = cloneSchedule(prev);
+      if (origin && origin.day) {
+        next[origin.day][origin.key] = next[origin.day][origin.key].filter((n) => n !== name);
+      }
+      if (targetDay) {
+        Object.keys(next[targetDay]).forEach((k) => {
+          next[targetDay][k] = next[targetDay][k].filter((n) => n !== name);
+        });
+        next[targetDay][targetKey] = [...next[targetDay][targetKey], name];
+      }
+      return next;
+    });
   };
 
-  const handleAutoAssign = () => setScheduleData(autoAssign(shifts, workers));
-  const handleClear = () => setScheduleData(autoAssign(shifts, []));
+  const handleAutoAssign = () => setScheduleData(autoAssign(shifts, workers, lockedSchedule));
+  const handleClear = () => {
+    const empty = emptySchedule(shifts);
+    setScheduleData(empty);
+    setLockedSchedule(empty);
+  };
   const handlePrint = () => window.print();
 
   // --- Pointer drag lifecycle ---
@@ -347,12 +416,110 @@ export default function App() {
         .disp { font-family: 'Oswald', sans-serif; }
         .mono { font-family: 'JetBrains Mono', monospace; }
         .chip:active { cursor: grabbing; }
+        @page {
+          size: A4 landscape;
+          margin: 5mm;
+        }
         @media print {
           .no-print { display: none !important; }
-          body { background: #fff !important; }
-          .print-area { border: none !important; box-shadow: none !important; }
-          table.sched { width: 100%; border-collapse: collapse; }
-          table.sched th, table.sched td { border: 1px solid #333 !important; color: #000 !important; background: #fff !important; padding: 6px 8px !important; }
+          html,
+          body,
+          #root {
+            width: 100% !important;
+            height: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #fff !important;
+          }
+          body {
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          #root > div {
+            min-height: auto !important;
+            background: #fff !important;
+          }
+          #root > div > div {
+            display: block !important;
+            width: 100% !important;
+            max-width: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          main {
+            width: 100% !important;
+            max-width: none !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          .print-area {
+            border: none !important;
+            box-shadow: none !important;
+            padding: 0 !important;
+            width: 100% !important;
+            max-width: none !important;
+            margin: 0 !important;
+          }
+          .print-area h2 {
+            font-size: 20px !important;
+            line-height: 1.1 !important;
+            margin: 0 0 6mm 0 !important;
+          }
+          .print-area > div:last-child {
+            overflow: visible !important;
+            width: 100% !important;
+          }
+          table.sched {
+            width: 100% !important;
+            min-width: 0 !important;
+            table-layout: fixed !important;
+            border-collapse: collapse !important;
+            font-size: 11px !important;
+            height: 175mm !important;
+          }
+          table.sched th,
+          table.sched td {
+            border: 1px solid #333 !important;
+            color: #000 !important;
+            background: #fff !important;
+            padding: 5px 6px !important;
+            vertical-align: top !important;
+          }
+          table.sched th:first-child,
+          table.sched td:first-child {
+            width: 14% !important;
+          }
+          table.sched th:last-child,
+          table.sched td:last-child {
+            width: 18% !important;
+          }
+          table.sched th .disp,
+          table.sched td .font-semibold {
+            font-size: 12px !important;
+            line-height: 1.1 !important;
+          }
+          table.sched .mono {
+            font-size: 9px !important;
+            line-height: 1.1 !important;
+          }
+          .print-area .chip {
+            min-width: 0 !important;
+            padding: 2px 6px !important;
+            font-size: 10px !important;
+            line-height: 1.1 !important;
+            border-radius: 999px !important;
+            gap: 3px !important;
+            margin: 0 !important;
+          }
+          .print-area .chip button {
+            display: none !important;
+          }
+          .print-area tbody tr {
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
+            height: 24mm !important;
+          }
         }
       `}</style>
 
@@ -537,26 +704,26 @@ export default function App() {
             </div>
           </div>
 
-          <div className="print-area rounded-lg p-6" style={{ background: "#FFFFFF", border: "1px solid #D8D2C4" }}>
+          <div className="print-area rounded-lg p-5" style={{ background: "#FFFFFF", border: "1px solid #D8D2C4" }}>
             <div className="mb-5">
               <h2 className="disp text-2xl tracking-wide">RASPORED{headerRange ? `: ${headerRange}` : ""}</h2>
             </div>
             <div style={{ overflowX: "auto" }}>
-              <table className="sched" style={{ width: "100%", borderCollapse: "collapse", minWidth: "1040px" }}>
+              <table className="sched" style={{ width: "100%", borderCollapse: "collapse", minWidth: "960px" }}>
                 <thead>
                   <tr>
-                    <th className="text-left disp text-base tracking-wide p-3.5" style={{ borderBottom: "2px solid #1B2430" }}>
+                    <th className="text-left disp text-sm tracking-wide p-3" style={{ borderBottom: "2px solid #1B2430" }}>
                       Dan
                     </th>
                     {shifts.map((s, i) => (
-                      <th key={s.id} className="text-left p-3.5" style={{ borderBottom: `2px solid ${shiftColor(i)}`, background: `${shiftColor(i)}1A` }}>
-                        <div className="disp text-base tracking-wide">{s.name}</div>
+                      <th key={s.id} className="text-left p-3" style={{ borderBottom: `2px solid ${shiftColor(i)}`, background: `${shiftColor(i)}1A` }}>
+                        <div className="disp text-sm tracking-wide">{s.name}</div>
                         <div className="mono text-xs" style={{ color: "#9AA5B1" }}>
                           {s.from}–{s.to}
                         </div>
                       </th>
                     ))}
-                    <th className="text-left disp text-base tracking-wide p-3.5" style={{ borderBottom: "2px solid #C1502E", background: "#C1502E14" }}>
+                    <th className="text-left disp text-sm tracking-wide p-3" style={{ borderBottom: "2px solid #C1502E", background: "#C1502E14" }}>
                       Slobodan dan / napomena
                     </th>
                   </tr>
@@ -564,8 +731,8 @@ export default function App() {
                 <tbody>
                   {activeDays.map((day, rowIdx) => (
                     <tr key={day.key}>
-                      <td className="p-3.5 align-top" style={{ background: `${dayColor(day.key)}17`, borderLeft: `5px solid ${dayColor(day.key)}` }}>
-                        <div className="font-semibold text-base">{day.label}</div>
+                      <td className="p-3 align-top" style={{ background: `${dayColor(day.key)}17`, borderLeft: `4px solid ${dayColor(day.key)}` }}>
+                        <div className="font-semibold text-sm">{day.label}</div>
                         {dateForDay(day.key) && (
                           <div className="mono text-xs" style={{ color: "#9AA5B1" }}>
                             {dateForDay(day.key)}
@@ -580,15 +747,15 @@ export default function App() {
                           <td
                             key={s.id}
                             data-dropzone={zone}
-                            className="p-3.5 align-top"
+                            className="p-3 align-top"
                             style={{
                               background: isZoneActive(zone) ? "#EAF1EC" : `${shiftColor(i)}0D`,
                               outline: isZoneActive(zone) ? "2px dashed #3E6259" : understaffed ? "1px dashed #C1502E" : "none",
                               outlineOffset: "-2px",
-                              minHeight: "88px",
+                              minHeight: "64px",
                             }}
                           >
-                            <div className="flex flex-wrap gap-3">
+                            <div className="flex flex-wrap gap-1.5">
                               {names.map((name) => (
                                 <Chip
                                   key={name}
@@ -619,15 +786,15 @@ export default function App() {
                         return (
                           <td
                             data-dropzone={zone}
-                            className="p-3.5 align-top"
+                            className="p-3 align-top"
                             style={{
                               background: isZoneActive(zone) ? "#EAF1EC" : "#C1502E0A",
                               outline: isZoneActive(zone) ? "2px dashed #3E6259" : "none",
                               outlineOffset: "-2px",
-                              minHeight: "88px",
+                              minHeight: "64px",
                             }}
                           >
-                            <div className="flex flex-wrap gap-3">
+                            <div className="flex flex-wrap gap-1.5">
                               {offNames.map((name) => (
                                 <Chip
                                   key={name}
