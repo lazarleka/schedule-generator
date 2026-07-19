@@ -552,7 +552,6 @@ export default function App() {
               RASPORED SMENA
             </h1>
             <p className="text-sm mt-0.5" style={{ color: "#9AA5B1" }}>
-              Uhvati ime i prevuci ga u smenu koja mu odgovara — radi mišem i na dodir
             </p>
           </div>
         </div>
@@ -836,7 +835,6 @@ export default function App() {
       </div>
 
       <footer className="no-print text-center text-xs py-6" style={{ color: "#9AA5B1" }}>
-        Auto-raspoređivanje ravnomerno rotira radnike kroz sve smene tokom nedelje. Prevuci imena da ručno doradiš raspored.
       </footer>
     </div>
   );
