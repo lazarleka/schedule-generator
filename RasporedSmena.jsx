@@ -503,13 +503,20 @@ export default function App() {
             font-size: 9px !important;
             line-height: 1.1 !important;
           }
+          table.sched td:first-child .mono {
+            font-size: 14px !important;
+            font-weight: 700 !important;
+            line-height: 1.15 !important;
+            margin-top: 2px !important;
+          }
           .print-area .chip {
             min-width: 0 !important;
-            padding: 2px 6px !important;
-            font-size: 10px !important;
-            line-height: 1.1 !important;
+            padding: 3px 9px !important;
+            font-size: 18px !important;
+            font-weight: 600 !important;
+            line-height: 1.15 !important;
             border-radius: 999px !important;
-            gap: 3px !important;
+            gap: 5px !important;
             margin: 0 !important;
           }
           .print-area .chip button {
@@ -828,7 +835,7 @@ export default function App() {
                 <span className="mono" style={{ color: "#9AA5B1" }}>
                   {s.from}–{s.to}
                 </span>
-              </div>
+n              </div>
             ))}
           </div>
         </main>

@@ -3,10 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "desktop": "npm run build && electron .",
+    "desktop:build": "npm run build && electron-packager . RasporedSmena --platform=win32 --arch=x64 --out=desktop-release --overwrite --ignore=desktop-release --ignore=release --ignore=.git"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
@@ -17,5 +20,21 @@
     "tailwindcss": "^3.4.17",
     "vite": "^6.0.5"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@electron/packager": "^20.0.3",
+    "electron": "^31.7.7"
+  },
+  "build": {
+    "appId": "com.raspored.smena",
+    "productName": "Raspored Smena",
+    "directories": {
+      "output": "desktop-release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {}
+  }
 }
