@@ -12,6 +12,7 @@
     "desktop:build": "npm run build && electron-packager . RasporedSmena --platform=win32 --arch=x64 --out=desktop-release --overwrite --ignore=desktop-release --ignore=release --ignore=.git"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
@@ -22,7 +23,7 @@
   },
   "devDependencies": {
     "@electron/packager": "^20.0.3",
-    "electron": "^31.7.7"
+    "electron": "^43.2.0"
   },
   "build": {
     "appId": "com.raspored.smena",

@@ -117,7 +117,41 @@ function shuffled(items) {
   return copy;
 }
 
-function autoAssign(shifts, workerNames, lockedSchedule = emptySchedule(shifts)) {
+function shiftCoverageOk(shiftCounts, shifts, workerNames) {
+  return workerNames.every((name) => shifts.every((s) => shiftCounts[name][s.id] > 0));
+}
+
+function shiftBalanceOk(shiftCounts, shifts, workerNames) {
+  return shifts.every((s) => {
+    const counts = workerNames.map((name) => shiftCounts[name][s.id]);
+    return Math.max(...counts) - Math.min(...counts) <= 1;
+  });
+}
+
+function scheduleScore(workCounts, offCounts, shiftCounts, shifts, workerNames) {
+  const workValues = Object.values(workCounts);
+  const offValues = Object.values(offCounts);
+  const workSpread = Math.max(...workValues) - Math.min(...workValues);
+  const offSpread = Math.max(...offValues) - Math.min(...offValues);
+  const shiftSpread = shifts.reduce((sum, s) => {
+    const counts = workerNames.map((name) => shiftCounts[name][s.id]);
+    return sum + Math.max(...counts) - Math.min(...counts);
+  }, 0);
+  const overTargetCount = shifts.reduce(
+    (sum, s) =>
+      sum +
+      workerNames.filter((name) => shiftCounts[name][s.id] > Math.ceil((DAY_DEFS.length * s.needed) / workerNames.length)).length,
+    0
+  );
+  const missingShiftTypes = workerNames.reduce(
+    (sum, name) => sum + shifts.filter((s) => shiftCounts[name][s.id] === 0).length,
+    0
+  );
+
+  return missingShiftTypes * 10000 + shiftSpread * 1000 + overTargetCount * 500 + offSpread * 100 + workSpread * 50;
+}
+
+function autoAssignAttempt(shifts, workerNames, lockedSchedule = emptySchedule(shifts)) {
   const n = workerNames.length;
   const schedule = {};
   const workerSet = new Set(workerNames);
@@ -127,9 +161,10 @@ function autoAssign(shifts, workerNames, lockedSchedule = emptySchedule(shifts))
       shifts.forEach((s) => (schedule[d.key][s.id] = []));
       schedule[d.key].off = [];
     });
-    return schedule;
+    return { schedule, workCounts: {}, offCounts: {}, shiftCounts: {} };
   }
   const workCounts = Object.fromEntries(workerNames.map((name) => [name, 0]));
+  const offCounts = Object.fromEntries(workerNames.map((name) => [name, 0]));
   const shiftCounts = Object.fromEntries(
     workerNames.map((name) => [name, Object.fromEntries(shifts.map((s) => [s.id, 0]))])
   );
@@ -138,12 +173,14 @@ function autoAssign(shifts, workerNames, lockedSchedule = emptySchedule(shifts))
 
   DAY_DEFS.forEach((day) => {
     const usedToday = new Set();
+    const lockedWorking = new Set();
     schedule[day.key] = {};
     shifts.forEach((s) => {
       const lockedNames = (lockedSchedule[day.key]?.[s.id] || []).filter((name) => workerSet.has(name) && !usedToday.has(name));
       schedule[day.key][s.id] = lockedNames;
       lockedNames.forEach((name) => {
         usedToday.add(name);
+        lockedWorking.add(name);
         workCounts[name] += 1;
         shiftCounts[name][s.id] += 1;
         lastShiftByWorker[name] = s.id;
@@ -152,17 +189,35 @@ function autoAssign(shifts, workerNames, lockedSchedule = emptySchedule(shifts))
 
     const lockedOff = (lockedSchedule[day.key]?.off || []).filter((name) => workerSet.has(name) && !usedToday.has(name));
     lockedOff.forEach((name) => usedToday.add(name));
+    const openSlots = shifts.reduce((sum, s) => sum + Math.max(0, s.needed - schedule[day.key][s.id].length), 0);
+    const plannedWorkers = shuffled(workerNames)
+      .filter((name) => !usedToday.has(name))
+      .sort((a, b) => {
+        const aMissingTypes = shifts.filter((s) => shiftCounts[a][s.id] === 0).length;
+        const bMissingTypes = shifts.filter((s) => shiftCounts[b][s.id] === 0).length;
+        const aShiftDeficit = shifts.reduce((sum, s) => sum + Math.max(0, shiftTargets[s.id] - shiftCounts[a][s.id]), 0);
+        const bShiftDeficit = shifts.reduce((sum, s) => sum + Math.max(0, shiftTargets[s.id] - shiftCounts[b][s.id]), 0);
+        return bMissingTypes - aMissingTypes || bShiftDeficit - aShiftDeficit || offCounts[b] - offCounts[a] || workCounts[a] - workCounts[b];
+      })
+      .slice(0, openSlots);
+    const workPool = new Set([...lockedWorking, ...plannedWorkers]);
 
     shuffled(shifts).forEach((s) => {
       let count = schedule[day.key][s.id].length;
       const rankedCandidates = shuffled(workerNames)
-        .filter((name) => !usedToday.has(name))
+        .filter((name) => !usedToday.has(name) && workPool.has(name))
         .sort((a, b) => {
           const aRepeatsYesterday = lastShiftByWorker[a] === s.id ? 1 : 0;
           const bRepeatsYesterday = lastShiftByWorker[b] === s.id ? 1 : 0;
+          const aMissingThisShift = shiftCounts[a][s.id] === 0 ? 0 : 1;
+          const bMissingThisShift = shiftCounts[b][s.id] === 0 ? 0 : 1;
+          const aShiftDeficit = Math.max(0, shiftTargets[s.id] - shiftCounts[a][s.id]);
+          const bShiftDeficit = Math.max(0, shiftTargets[s.id] - shiftCounts[b][s.id]);
           const aUnderTarget = shiftCounts[a][s.id] < shiftTargets[s.id] ? 0 : 1;
           const bUnderTarget = shiftCounts[b][s.id] < shiftTargets[s.id] ? 0 : 1;
           return (
+            aMissingThisShift - bMissingThisShift ||
+            bShiftDeficit - aShiftDeficit ||
             aRepeatsYesterday - bRepeatsYesterday ||
             aUnderTarget - bUnderTarget ||
             shiftCounts[a][s.id] - shiftCounts[b][s.id] ||
@@ -184,9 +239,41 @@ function autoAssign(shifts, workerNames, lockedSchedule = emptySchedule(shifts))
     });
 
     schedule[day.key].off = [...lockedOff, ...workerNames.filter((w) => !usedToday.has(w))];
+    schedule[day.key].off.forEach((name) => {
+      offCounts[name] += 1;
+    });
   });
 
-  return schedule;
+  return { schedule, workCounts, offCounts, shiftCounts };
+}
+
+function autoAssign(shifts, workerNames, lockedSchedule = emptySchedule(shifts)) {
+  const n = workerNames.length;
+  if (n === 0) return autoAssignAttempt(shifts, workerNames, lockedSchedule).schedule;
+
+  const canCoverEveryShiftType =
+    shifts.length > 0 &&
+    shifts.every((s) => DAY_DEFS.length * s.needed >= n) &&
+    shifts.reduce((sum, s) => sum + DAY_DEFS.length * s.needed, 0) >= n * shifts.length;
+  const canBalanceEveryShift = shifts.every((s) => DAY_DEFS.length * s.needed >= n);
+  let best = null;
+  let bestScore = Infinity;
+
+  for (let i = 0; i < 1000; i += 1) {
+    const result = autoAssignAttempt(shifts, workerNames, lockedSchedule);
+    const score = scheduleScore(result.workCounts, result.offCounts, result.shiftCounts, shifts, workerNames);
+    if (score < bestScore) {
+      best = result;
+      bestScore = score;
+    }
+    const coverageOk = !canCoverEveryShiftType || shiftCoverageOk(result.shiftCounts, shifts, workerNames);
+    const balanceOk = !canBalanceEveryShift || shiftBalanceOk(result.shiftCounts, shifts, workerNames);
+    if (coverageOk && balanceOk) {
+      return result.schedule;
+    }
+  }
+
+  return best.schedule;
 }
 
 function Chip({ name, origin, onGrab, onRemove, dimmed }) {
